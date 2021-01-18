@@ -64,6 +64,16 @@ uint8_t maxSpeed = 100;
 #define ReverseSpeed                200
 #define TurningSpeed                100
 
+// Thresholds for using quaternions and angles
+#define YAW_THRESHOLD           10
+#define HIGH_ROLL_THRESHOLD     15
+#define LOW_ROLL_THRESHOLD      -15
+#define MH_ROLL_THRESHOLD       10
+#define ML_ROLL_THRESHOLD       -10
+#define HIGH_PITCH_THRESHOLD    10
+#define LOW_PITCH_THRESHOLD     6
+#define QUAT_INTERVAL           250
+
 
 // Enumeration of possible robot states
 typedef enum {
@@ -82,7 +92,13 @@ boolean isPlaying = false;
 //lights control bool
 boolean lightsOn = false;
 
-unsigned long lastPress = 0;
+//use quartenions or buttons
+boolean useQuat = false;
+double orientation[3];
+
+//time stamps
+unsigned long curr_time = 0;
+unsigned long prev_time = 0;
 
 static RobotState robotState;
 static LightsState lightsState;
@@ -107,7 +123,7 @@ void turnLeft();
 /**************************************************************************/
 void setup(void)
 {
-  Serial.begin(9600);
+  //Serial.begin(9600);
 
   AFMS.begin();  // create with the default frequency 1.6KHz
 
@@ -131,7 +147,7 @@ void setup(void)
   //Robot Initial State
   robotState = STOP;
 
-  //Lights Initial Stat
+  //Lights Initial State
   lightsState = OFF;
 }
 
@@ -154,14 +170,14 @@ void checkGeneral() {
   switch (robotState) {
     case FWD: case REV:
       break;
-    case TURN_FWD: case TURN_REV:
+    case TURN_FWD: case TURN_REV: case TURN_STOP:
       blinker();
       break;
-    case STOP: case TURN_STOP:
+    case STOP: 
       if(isPlaying) {
-//        if(playTune()) {isPlaying = false;}
-        honk(); 
-      }                  
+        if(playTune()) {isPlaying = false;}
+      }
+      break;                  
   }
 }
 
@@ -175,7 +191,9 @@ bool readController(){
     boolean pressed = packetbuffer[3] - '0';
 
     if (pressed) {
+//      Serial.println("button pressed");
       if(buttnum == 1) {
+        useQuat = false;
         robotState = STOP;
         maxSpeed = 0;
         controlSpeed();
@@ -192,25 +210,24 @@ bool readController(){
             honk();
             break;
           case STOP: case TURN_STOP:
-            if(isPlaying) {
-              isPlaying = false; 
-            } else {
-              isPlaying = true;
-            }
+            isPlaying = !isPlaying;
             break;                   
         }
       }
 
       if(buttnum == 3){
-        
+        // toggles the use of quaternions
+        useQuat = !useQuat;
+        Serial.println("Quaternion Toggled");
       }
 
       if(buttnum == 4){
         toggleLights();
       }
-
+      
+      //up
       if(buttnum == 5){
-        switch (robotState) {
+        switch (robotState) {        
           case FWD:
             handleAcceleration();
             break;
@@ -226,7 +243,8 @@ bool readController(){
           default: break;                  
         }
       }
-      
+
+      //down
       if(buttnum == 6){
         switch (robotState) {
           case FWD:
@@ -244,7 +262,8 @@ bool readController(){
           default:  break;                 
         }
       }
-      
+
+      //left
       if(buttnum == 7){
         switch (robotState) {
           case FWD:
@@ -268,7 +287,8 @@ bool readController(){
         // indicate left
         setBlinkDirection(0); 
       }
-      
+
+      //right
       if(buttnum == 8){
         switch (robotState) {
           case FWD:
@@ -293,50 +313,56 @@ bool readController(){
         setBlinkDirection(1);        
       }
 
-      lastPress = millis();
-
       controlSpeed();
       
-  } else {
-    //when no button is pressed
-    switch (robotState) {
-      case TURN_FWD:
-        balanceSpeed();
-        robotState = FWD;
-        restoreLights();
-        break;        
-      case TURN_REV:
-        balanceSpeed();
-        robotState = REV;
-        restoreLights();
-        break;
-      case TURN_STOP:
-        maxSpeed = 0;
-        controlSpeed();
-        L_MOTOR->run(RELEASE);
-        R_MOTOR->run(RELEASE);
-        robotState = STOP;
-        break;
-      default:  break;                 
-    }        
-  }
+    } else {
+      //when no button is pressed
+      switch (robotState) {
+        case TURN_FWD:
+          balanceSpeed();
+          robotState = FWD;
+          restoreLights();
+          break;        
+        case TURN_REV:
+          balanceSpeed();
+          robotState = REV;
+          restoreLights();
+          break;
+        case TURN_STOP:
+          maxSpeed = 0;
+          controlSpeed();
+          L_MOTOR->run(RELEASE);
+          R_MOTOR->run(RELEASE);
+          robotState = STOP;
+          restoreLights();
+          break;
+        default:  break;                 
+      }        
+    }
+
+    
+  } else if (packetbuffer[1] == 'Q' && useQuat && (millis()-prev_time > QUAT_INTERVAL) ) {
+    findOrientation();
+    driveRover();
+//    delay(50);
+    prev_time = millis();
   }
 }
 
 
 // Increase the speed of the motors
 void handleAcceleration() {
-  if (maxSpeed <= 245) {
-    maxSpeed = maxSpeed + 10;
+  if (maxSpeed <= 235) {
+    maxSpeed = maxSpeed + 20;
   }  
 }
 
 // Decrease the speed of the motors
 void handleDeceleration() {
-  if (maxSpeed >= 10) {
-    maxSpeed = maxSpeed - 10;
+  if (maxSpeed >= 20) {
+    maxSpeed = maxSpeed - 20;
   }
-  if (maxSpeed == 0) {
+  if (maxSpeed <= 0) {
     robotState = STOP;  
   }
 }
@@ -400,7 +426,8 @@ void toggleLights() {
   }
 }
 
-// Restoe Lights after blinking
+
+// Restore Lights after blinking
 void restoreLights() {
   switch (lightsState) {
     case OFF:
@@ -413,6 +440,136 @@ void restoreLights() {
       break;
   }
 }
+
+
+// Finds the device pitch, yaw and roll to control rover
+void findOrientation() {
+//  Serial.println("Quaternion Data:");
+  
+  float x = *( (float*)(packetbuffer + 2) );
+//  Serial.print("x = ");
+//  Serial.println(x, 7);
+  
+
+  float y = *( (float*)(packetbuffer + 6) );
+//  Serial.print("y = ");
+//  Serial.println(y, 7);
+
+  float z = *( (float*)(packetbuffer + 10) );
+//  Serial.print("z = ");
+//  Serial.println(z, 7); 
+
+  float w = *( (float*)(packetbuffer + 14) );
+//  Serial.print("w = ");
+//  Serial.println(w, 7); 
+
+  double yaw = atan2(2*z*w - 2*y*x , 1 - 2*pow(z,2) - 2*pow(x,2));
+  yaw = yaw * 180 / PI;
+//  Serial.print("yaw = ");
+//  Serial.println(yaw, 7); 
+
+  double pitch = asin(2*y*z + 2*x*w);
+  pitch = pitch * 180 / PI;
+//  Serial.print("pitch = ");
+//  Serial.println(pitch, 7); 
+
+  double roll = atan2(2*y*w - 2*z*x , 1 - 2*pow(y,2) - 2*pow(x,2));
+  roll = roll * 180 / PI;
+//  Serial.print("roll = ");
+//  Serial.println(roll, 7);
+
+  orientation[1] = yaw;
+  orientation[2] = pitch;
+  orientation[3] = roll;
+}
+
+void driveRover() {
+  controlLongitudinal();
+  controlLateral();
+
+}
+
+
+// control forward and reverse by using roll angle
+void controlLongitudinal() {
+  int roll = (int) round(orientation[3]);
+
+//  Serial.print("roll = ");
+//  Serial.println(roll); 
+
+  // sets the robot state depending on the roll angle
+  if (roll > HIGH_ROLL_THRESHOLD) {
+    robotState = FWD;
+    L_MOTOR->run(FORWARD);
+    R_MOTOR->run(FORWARD);
+//    Serial.println("Forward");
+  } else if (roll < LOW_ROLL_THRESHOLD) {
+    robotState = REV;
+    L_MOTOR->run(BACKWARD);
+    R_MOTOR->run(BACKWARD);
+//    Serial.println("Reverse");
+  } else if (roll > ML_ROLL_THRESHOLD && roll < MH_ROLL_THRESHOLD) {
+    robotState = STOP;
+//    Serial.println("Stop");
+  }
+
+  // sets the robot speed depending on the state and roll angle
+  switch (robotState) {
+    case FWD:
+      roll = min(90, roll);
+      maxSpeed = map(roll, 0, 90, 0, 255);
+      break;
+    case REV:
+      roll = abs(max(-90, roll));
+      maxSpeed = map(roll, 0, 90, 0, 255);
+      break;
+    case STOP:
+      maxSpeed = 0;
+      controlSpeed();
+      L_MOTOR->run(RELEASE);
+      R_MOTOR->run(RELEASE); 
+      break;
+  }
+
+//  Serial.println(maxSpeed);
+
+  controlSpeed();
+
+}
+
+// control left and right by using yaw angle
+void controlLateral() {
+  int pitch = (int) round(orientation[2]);
+  
+//  Serial.print("pitch = ");
+//  Serial.println(pitch);
+
+  switch (robotState) {
+    case FWD: case REV:
+      if (abs(pitch) > HIGH_PITCH_THRESHOLD) {
+        if(pitch > 0) {
+          turnLeft();
+        } else {
+          turnRight();
+        }
+      }
+      break;
+    case STOP:
+      if (abs(pitch) > HIGH_PITCH_THRESHOLD) {
+        if(pitch > 0) {
+          L_MOTOR->run(RELEASE);
+          R_MOTOR->run(FORWARD);
+        } else {
+          L_MOTOR->run(FORWARD);
+          R_MOTOR->run(RELEASE);
+        }
+        maxSpeed = TurningSpeed;                  
+      }
+      break;
+    default: break;
+  }
+}
+
 
 void BLEsetup(){
   Serial.print(F("Initialising the Bluefruit LE module: "));

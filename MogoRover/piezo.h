@@ -54,26 +54,28 @@ void setTune() {
 }
 
 int playTune() {
-//  for (int i=0; i<17; i++) {
-  if(TestTimerExpired(TIMER_1)) {
-    int tom = melod[tuneCount];
-    int tempo = ritmo[tuneCount];
+  for (int i=0; i<17; i++) {
+//  if(TestTimerExpired(TIMER_1)) {
+    int tom = melod[i];
+    int tempo = ritmo[i];
 
     long tvalue = tempo * vel;
 
     tocar(tom, tvalue);
 
-    tuneCount++;
-    TMRArdReturn_t TMRArd_InitTimer(TIMER_1, TUNE_TIME);
+//    tuneCount++;
+//    TMRArdReturn_t TMRArd_InitTimer(TIMER_1, TUNE_TIME);
 
   }
+
+  return 1;
   
-  if(tuneCount == tuneVal) {
-    tuneCount = 0;
-    return 1;
-  } else {
-    return 0;
-  }
+//  if(tuneCount == tuneVal) {
+//    tuneCount = 0;
+//    return 1;
+//  } else {
+//    return 0;
+//  }
 }
 
 void honk() {

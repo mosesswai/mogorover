@@ -39,10 +39,6 @@ void blinker() {
   } else {
     digitalWrite(LIGHT_FL, !blinking);
     blinking = !blinking;
-  }
-  
-  
-  
-  
+  }  
 }
 
